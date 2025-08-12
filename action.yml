@@ -1,0 +1,49 @@
+name: 'Blue Green Env Tracker'
+description: 'Manage blue-green deployments using AWS DynamoDB for state tracking'
+author: 'Your Organization'
+branding:
+  icon: 'toggle-right'
+  color: 'blue'
+
+inputs:
+  aws-access-key-id:
+    description: 'AWS Access Key ID'
+    required: true
+  aws-secret-access-key:
+    description: 'AWS Secret Access Key'
+    required: true
+  aws-region:
+    description: 'AWS Region'
+    required: true
+    default: 'us-east-1'
+  table-name:
+    description: 'DynamoDB table name for deployment state'
+    required: true
+    default: 'blue-green-deployments'
+  deployment-key:
+    description: 'Unique key for this deployment (e.g., service name or environment)'
+    required: true
+  action:
+    description: 'Action to perform: init, get-active, set-active, get-inactive, toggle'
+    required: true
+  color:
+    description: 'Color to set as active (blue/green) - required for init and set-active actions'
+    required: false
+  initial-color:
+    description: 'Initial color for initialization (blue/green)'
+    required: false
+    default: 'blue'
+
+outputs:
+  active-color:
+    description: 'Currently active color (blue/green)'
+  inactive-color:
+    description: 'Currently inactive color (blue/green)'
+  previous-color:
+    description: 'Previous active color before change'
+  table-created:
+    description: 'Whether the DynamoDB table was created in this run'
+
+runs:
+  using: 'node20'
+  main: 'dist/index.js'

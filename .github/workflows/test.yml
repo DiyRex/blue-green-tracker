@@ -1,0 +1,220 @@
+name: Test Blue-Green Action
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    
+    strategy:
+      matrix:
+        node-version: [20.x]
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run linting
+        run: npm run lint
+
+      - name: Run tests
+        run: npm test
+
+      - name: Build action
+        run: npm run build
+
+      - name: Verify dist/ is up to date
+        run: |
+          if [ "$(git diff --ignore-space-at-eol dist/ | wc -l)" -gt "0" ]; then
+            echo "Detected uncommitted changes after build. See status below:"
+            git diff
+            exit 1
+          fi
+
+  integration-test:
+    runs-on: ubuntu-latest
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Test - Initialize deployment
+        id: init
+        uses: ./
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-east-1
+          table-name: test-blue-green-${{ github.run_id }}
+          deployment-key: integration-test
+          action: init
+          initial-color: blue
+
+      - name: Verify initialization
+        run: |
+          echo "✅ Initialization successful"
+          echo "Active color: ${{ steps.init.outputs.active-color }}"
+          echo "Inactive color: ${{ steps.init.outputs.inactive-color }}"
+          echo "Table created: ${{ steps.init.outputs.table-created }}"
+
+      - name: Test - Get active environment
+        id: get-active
+        uses: ./
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-east-1
+          table-name: test-blue-green-${{ github.run_id }}
+          deployment-key: integration-test
+          action: get-active
+
+      - name: Verify get-active
+        run: |
+          echo "✅ Get active successful"
+          if [ "${{ steps.get-active.outputs.active-color }}" != "blue" ]; then
+            echo "❌ Expected active color to be blue, got ${{ steps.get-active.outputs.active-color }}"
+            exit 1
+          fi
+
+      - name: Test - Toggle environment
+        id: toggle
+        uses: ./
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-east-1
+          table-name: test-blue-green-${{ github.run_id }}
+          deployment-key: integration-test
+          action: toggle
+
+      - name: Verify toggle
+        run: |
+          echo "✅ Toggle successful"
+          echo "New active color: ${{ steps.toggle.outputs.active-color }}"
+          echo "Previous color: ${{ steps.toggle.outputs.previous-color }}"
+          if [ "${{ steps.toggle.outputs.active-color }}" != "green" ]; then
+            echo "❌ Expected active color to be green after toggle, got ${{ steps.toggle.outputs.active-color }}"
+            exit 1
+          fi
+          if [ "${{ steps.toggle.outputs.previous-color }}" != "blue" ]; then
+            echo "❌ Expected previous color to be blue, got ${{ steps.toggle.outputs.previous-color }}"
+            exit 1
+          fi
+
+      - name: Test - Set specific color
+        id: set-blue
+        uses: ./
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-east-1
+          table-name: test-blue-green-${{ github.run_id }}
+          deployment-key: integration-test
+          action: set-active
+          color: blue
+
+      - name: Verify set-active
+        run: |
+          echo "✅ Set active successful"
+          if [ "${{ steps.set-blue.outputs.active-color }}" != "blue" ]; then
+            echo "❌ Expected active color to be blue, got ${{ steps.set-blue.outputs.active-color }}"
+            exit 1
+          fi
+
+      - name: Test - Get inactive environment
+        id: get-inactive
+        uses: ./
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-east-1
+          table-name: test-blue-green-${{ github.run_id }}
+          deployment-key: integration-test
+          action: get-inactive
+
+      - name: Verify get-inactive
+        run: |
+          echo "✅ Get inactive successful"
+          if [ "${{ steps.get-inactive.outputs.inactive-color }}" != "green" ]; then
+            echo "❌ Expected inactive color to be green, got ${{ steps.get-inactive.outputs.inactive-color }}"
+            exit 1
+          fi
+
+      - name: Test error handling - Invalid action
+        id: invalid-action
+        continue-on-error: true
+        uses: ./
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-east-1
+          table-name: test-blue-green-${{ github.run_id }}
+          deployment-key: integration-test
+          action: invalid-action
+
+      - name: Verify error handling
+        run: |
+          if [ "${{ steps.invalid-action.outcome }}" != "failure" ]; then
+            echo "❌ Expected invalid action to fail"
+            exit 1
+          fi
+          echo "✅ Error handling works correctly"
+
+      # Clean up test resources
+      - name: Cleanup test table
+        if: always()
+        run: |
+          aws dynamodb delete-table \
+            --table-name test-blue-green-${{ github.run_id }} \
+            --region us-east-1 || echo "Table cleanup failed or table doesn't exist"
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+
+  publish:
+    runs-on: ubuntu-latest
+    needs: [test, integration-test]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Create release
+        id: create_release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: v${{ github.run_number }}
+          release_name: Release v${{ github.run_number }}
+          body: |
+            ## Changes
+            - Automated release from commit ${{ github.sha }}
+            
+            ## Usage
+            ```yaml
+            - uses: ${{ github.repository }}@v${{ github.run_number }}
+              with:
+                aws-access-key-id: ${{ '${{ secrets.AWS_ACCESS_KEY_ID }}' }}
+                aws-secret-access-key: ${{ '${{ secrets.AWS_SECRET_ACCESS_KEY }}' }}
+                deployment-key: my-service
+                action: get-active
+            ```
+          draft: false
+          prerelease: false
